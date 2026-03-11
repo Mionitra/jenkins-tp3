@@ -42,6 +42,15 @@
       register: trivy_result
       changed_when: false
 
+    - name: Copy scan result from Trivy container to host
+      ansible.builtin.command:
+        argv:
+          - docker
+          - cp
+          - trivy-container:/tmp/trivy_raw.json
+          - /tmp/trivy_raw.json
+      changed_when: false
+
     - name: Convert Trivy JSON to categorised CSV
       ansible.builtin.shell: |
         python3 - <<'EOF'
