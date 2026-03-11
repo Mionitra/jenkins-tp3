@@ -19,7 +19,7 @@ pipeline {
     post {
         always {
             // Archive the CSV so it's visible in the Jenkins build artifacts UI
-            archiveArtifacts artifacts: 'outputs_*.csv', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'output_*.csv', allowEmptyArchive: true
         }
         failure { echo 'Pipeline failed — check outputs.csv for vulnerability details.' }
         success { cleanWs() }
