@@ -1,26 +1,27 @@
 pipeline {
     agent any
-
     environment {
         IMAGE_TAG = "${env.BUILD_ID}"
     }
-
     stages {
-        stage('Pull and Push') {
+        stage('Pull, Scan and Push') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'dockerhub-credentials',
                     usernameVariable: 'DOCKERHUB_USER',
                     passwordVariable: 'DOCKERHUB_PASS'
                 )]) {
-                    sh 'ansible-playbook playbook.yml'
+                    sh 'ansible-playbook push_images.yml'
                 }
             }
         }
     }
-
     post {
-        failure { echo 'Pipeline failed — check the logs.' }
+        always {
+            // Archive the CSV so it's visible in the Jenkins build artifacts UI
+            archiveArtifacts artifacts: 'outputs.csv', allowEmptyArchive: true
+        }
+        failure { echo 'Pipeline failed — check outputs.csv for vulnerability details.' }
         success { cleanWs() }
     }
 }

@@ -1,0 +1,123 @@
+- name: Pull, Scan, and Push Ubuntu 24.04
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    image_name: ubuntu
+    image_tag: "24.04"
+    dockerhub_repo: "{{ lookup('env', 'DOCKERHUB_USER') }}"
+    build_tag: "{{ lookup('env', 'IMAGE_TAG') }}"
+    trivy_output_raw: "/tmp/trivy_raw.json"
+    csv_output: "outputs.csv"
+
+  pre_tasks:
+    - name: Validate required environment variables
+      ansible.builtin.fail:
+        msg: "Required environment variable '{{ item.name }}' is not set or empty"
+      when: item.value == ""
+      loop:
+        - { name: "DOCKERHUB_USER", value: "{{ dockerhub_repo }}" }
+        - { name: "IMAGE_TAG",      value: "{{ build_tag }}" }
+
+  tasks:
+    - name: Log in to Docker Hub
+      community.docker.docker_login:
+        username: "{{ lookup('env', 'DOCKERHUB_USER') }}"
+        password: "{{ lookup('env', 'DOCKERHUB_PASS') }}"
+
+    - name: Pull Ubuntu 24.04
+      community.docker.docker_image:
+        name: "{{ image_name }}"
+        tag: "{{ image_tag }}"
+        source: pull
+
+    
+    - name: Run Trivy vulnerability scan (JSON output)
+      ansible.builtin.command: >
+        docker run exec trivy-container image trivy
+          --format json
+          --output /tmp/trivy_raw.json
+          --exit-code 0
+          {{ image_name }}:{{ image_tag }}
+      register: trivy_result
+      changed_when: false
+
+    - name: Convert Trivy JSON to categorised CSV
+      ansible.builtin.shell: |
+        python3 - <<'EOF'
+        import json, csv, sys
+
+        with open("{{ trivy_output_raw }}") as f:
+            data = json.load(f)
+
+        rows = []
+        for result in data.get("Results", []):
+            target = result.get("Target", "")
+            for vuln in result.get("Vulnerabilities") or []:
+                rows.append({
+                    "Severity":        vuln.get("Severity", ""),
+                    "VulnerabilityID": vuln.get("VulnerabilityID", ""),
+                    "PkgName":         vuln.get("PkgName", ""),
+                    "InstalledVersion":vuln.get("InstalledVersion", ""),
+                    "FixedVersion":    vuln.get("FixedVersion", ""),
+                    "Title":           vuln.get("Title", ""),
+                    "Target":          target,
+                })
+
+        # Sort: CRITICAL → HIGH → MEDIUM → LOW → UNKNOWN
+        order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+        rows.sort(key=lambda r: order.get(r["Severity"], 99))
+
+        fields = ["Severity","VulnerabilityID","PkgName",
+                  "InstalledVersion","FixedVersion","Title","Target"]
+
+        with open("{{ csv_output }}", "w", newline="") as out:
+            writer = csv.DictWriter(out, fieldnames=fields)
+
+            # Write section headers between severity groups
+            current_sev = None
+            for row in rows:
+                sev = row["Severity"]
+                if sev != current_sev:
+                    if current_sev is not None:
+                        out.write("\n")          # blank line between sections
+                    out.write(f"### {sev} ###\n")
+                    writer.writeheader()
+                    current_sev = sev
+                writer.writerow(row)
+
+        counts = {}
+        for r in rows:
+            counts[r["Severity"]] = counts.get(r["Severity"], 0) + 1
+        print(json.dumps(counts))
+        EOF
+      register: csv_counts
+      changed_when: false
+
+    - name: Show vulnerability summary
+      ansible.builtin.debug:
+        msg: "Scan complete — counts by severity: {{ csv_counts.stdout }}"
+
+    - name: Fail pipeline if CRITICAL vulnerabilities found
+      ansible.builtin.fail:
+        msg: >
+          CRITICAL vulnerabilities detected — refusing to push.
+          Review outputs.csv for details.
+      when: >
+        (csv_counts.stdout | from_json).get('CRITICAL', 0) | int > 0
+
+    - name: Debug tagging info
+      ansible.builtin.debug:
+        msg: "Tagging {{ image_name }}:{{ image_tag }} as {{ dockerhub_repo }}/{{ image_name }}:{{ build_tag }}"
+
+    - name: Tag and Push Ubuntu image to Docker Hub
+      community.docker.docker_image:
+        name: "{{ image_name }}:{{ image_tag }}"
+        repository: "{{ dockerhub_repo }}/{{ image_name }}"
+        tag: "{{ build_tag }}"
+        source: local
+        push: true
+
+    - name: Log out from Docker Hub
+      community.docker.docker_login:
+        state: absent
