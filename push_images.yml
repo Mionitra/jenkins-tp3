@@ -34,7 +34,7 @@
     
     - name: Run Trivy vulnerability scan (JSON output)
       ansible.builtin.command: >
-        docker run exec trivy-container image trivy
+        docker exec trivy-container image trivy
           --format json
           --output /tmp/trivy_raw.json
           --exit-code 0
